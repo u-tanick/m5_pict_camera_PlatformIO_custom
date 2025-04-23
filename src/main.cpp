@@ -27,6 +27,218 @@ void printlnInt(int16_t i) {
   display.println(i);
   Serial.println(i);
 }
+void displayStr(String str) {
+  display.drawCenterString(str, 120, 60);
+  Serial.println(str);
+}
+
+// ----------------------------------------------------
+// 最大8色のカラーパレット デフォルト
+int maxPaletteSize = 9;
+uint32_t ColorPalettes[9][8] = {
+  { // パレット0 slso8
+    0x0D2B45, 0x203C56, 0x544E68, 0x8D697A, 0xD08159, 0xFFAA5E, 0xFFD4A3, 0xFFECD6 },
+  { // パレット1 都市伝説解体センター風
+    0x000000, 0x000B22, 0x112B43, 0x437290, 0x437290, 0xE0D8D1, 0xE0D8D1, 0xFFFFFF },
+  { // パレット2 ファミレスを享受せよ風
+    0x010101, 0x33669F, 0x33669F, 0x33669F, 0x498DB7, 0x498DB7, 0xFBE379, 0xFBE379 },
+  { // パレット3 gothic-bit
+    0x0E0E12, 0x1A1A24, 0x333346, 0x535373, 0x8080A4, 0xA6A6BF, 0xC1C1D2, 0xE6E6EC },
+  { // パレット4 noire-truth
+    0x1E1C32, 0x1E1C32, 0x1E1C32, 0x1E1C32, 0xC6BAAC, 0xC6BAAC, 0xC6BAAC, 0xC6BAAC },
+  { // パレット5 2BIT DEMIBOY
+    0x252525, 0x252525, 0x4B564D, 0x4B564D, 0x9AA57C, 0x9AA57C, 0xE0E9C4, 0xE0E9C4 },
+  { // パレット6 deep-maze
+    0x001D2A, 0x085562, 0x009A98, 0x00BE91, 0x38D88E, 0x9AF089, 0xF2FF66, 0xF2FF66 },
+  { // パレット7 night-rain
+    0x000000, 0x012036, 0x3A7BAA, 0x7D8FAE, 0xA1B4C1, 0xF0B9B9, 0xFFD159, 0xFFFFFF },
+  { // パレット8 スペア用
+    0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000 },
+};
+
+// カラーパレット値確認用関数
+void checkPalettes() {
+  for (int pi = 0; pi < maxPaletteSize; ++pi) {
+    Serial.printf("%X,%X,%X,%X,%X,%X,%X,%X\n", ColorPalettes[pi][0], ColorPalettes[pi][1], ColorPalettes[pi][2], ColorPalettes[pi][3], ColorPalettes[pi][4], ColorPalettes[pi][5], ColorPalettes[pi][6], ColorPalettes[pi][7]);
+  }
+}
+
+// ----------------------------------------------------
+// SDカード関連
+#include <SPI.h>
+#include <SD.h>
+
+// SDカードにカラーパレットファイルがあれば読み込む
+// src/フォルダにサンプルを置いてあるため使用する場合は事前にSDカードに保存しておく
+// サンプルの設定自体は ColorPalettes の定義と同様
+bool loadPaletteFromSD(String filename) {
+
+  // SDカード内のファイルからカラーパレットを読み込む
+  File file = SD.open(filename, FILE_READ);
+  if (!file) {
+    // ファイルオープン失敗
+    return false;
+  }
+
+  // 8パターンのカラーパレットを順に読み込みColorPalettes[paletteIndex][colorCode]にセット
+  int paletteIndex = 0;
+  while (file.available() && paletteIndex < maxPaletteSize) {
+    String line = file.readStringUntil('\n');
+    line.trim();
+
+    if (line.startsWith("#") || line.length() == 0) {
+      // コメント行（#始まり）・空行はスキップ
+      continue;
+    }
+
+    uint32_t colors[8];
+    int colorCount = 0;
+    int lastIndex = 0;
+
+    while (colorCount < 8) {
+      int commaIndex = line.indexOf(',', lastIndex);
+      String colorStr;
+
+      if (commaIndex == -1) {
+        colorStr = line.substring(lastIndex);
+      } else {
+        colorStr = line.substring(lastIndex, commaIndex);
+        lastIndex = commaIndex + 1;
+      }
+
+      colorStr.trim();
+      char hexBuffer[16];
+      colorStr.toCharArray(hexBuffer, sizeof(hexBuffer));
+      uint32_t color = strtoul(hexBuffer, NULL, 0);  // ← base = 0 により0x(16進)を自動判別
+
+      colors[colorCount++] = color;
+
+      if (commaIndex == -1) {
+        break;
+      }
+    }
+    if (colorCount != 8) {
+      // カラーパレット定義が8色ではない不正な色数として読み込み失敗とする
+      file.close();
+      return false;
+    }
+
+    for (int i = 0; i < 8; ++i) {
+      ColorPalettes[paletteIndex][i] = colors[i];
+    }
+
+    paletteIndex++;
+  }
+  file.close();
+
+  // カラーパレット定義の上書き成功またはデフォルト定義のままの場合trueを返す
+  return true;
+
+}
+
+// ファイルの読み書きテスト用関数
+bool testReadWriteSD(){
+  // ファイル読み書きテスト用ファイル名
+  const char* filename = "/_writeTest.txt";
+
+  // ファイル作成と書き込み
+  File writeFile = SD.open(filename, FILE_WRITE);
+  if (writeFile) {
+    writeFile.println("test");
+    writeFile.close();
+    Serial.println("ファイルに書き込みました。");
+  } else {
+    Serial.println("ファイルの作成または書き込みに失敗しました。");
+    return false;
+  }
+
+  // ファイル読み込み
+  File readFile = SD.open(filename);
+  if (readFile) {
+    String content = readFile.readStringUntil('\n');
+    content.trim();
+    Serial.print("読み込んだ文字列: ");
+    Serial.println(content);
+    readFile.close();
+
+    // 読み込んだ内容が "test" ならファイルの読み書き成功としてテスト用ファイルも削除
+    if (content == "test") {
+      if (SD.remove(filename)) {
+        Serial.println("ファイルを削除しました。");
+      } else {
+        Serial.println("ファイルの削除に失敗しました。");
+        return false;
+      }
+    } else {
+      Serial.println("書き込んだ内容と読み込んだ内容が一致しないため、ファイルを削除しません。");
+      return false;
+    }
+  } else {
+    Serial.println("ファイルの読み込みに失敗しました。");
+    return false;
+  }
+
+  // 削除確認
+  if (!SD.exists(filename)) {
+    Serial.println("ファイルが正常に削除されています。");
+  } else {
+    Serial.println("ファイルがまだ存在しています。");
+    return false;
+  }
+
+  return true;
+}
+
+// ----------------------------------------------------
+// カメラ画像保存関連
+// SDカード保存ファイル名
+char filename[64];
+
+uint32_t keyOnTime = 0;                 // キースイッチを操作した時間
+int filecounter = 1;                    // ファイルカウンターは電源を入れるたびにリセットされる　極稀にファイル名が被るかも
+
+// ディスプレイに表示された画像を保存
+bool saveToSD_DisplayBMP() {
+  sprintf(filename, "/%010d_%04d_OLED.bmp", keyOnTime, filecounter);
+  File file = SD.open(filename, "w");
+  if (file) {
+
+    int width = display.width();
+    int height = display.height();
+    int rowSize = (3 * width + 3) & ~3;
+
+    lgfx::bitmap_header_t bmpheader;
+    bmpheader.bfType = 0x4D42;
+    bmpheader.bfSize = rowSize * height + sizeof(bmpheader);
+    bmpheader.bfOffBits = sizeof(bmpheader);
+    bmpheader.biSize = 40;
+    bmpheader.biWidth = width;
+    bmpheader.biHeight = height;
+    bmpheader.biPlanes = 1;
+    bmpheader.biBitCount = 24;
+    bmpheader.biCompression = 0;
+    bmpheader.biSizeImage = 0;
+    bmpheader.biXPelsPerMeter = 2835;
+    bmpheader.biYPelsPerMeter = 2835;
+    bmpheader.biClrUsed = 0;
+    bmpheader.biClrImportant = 0;
+
+    file.write((std::uint8_t*)&bmpheader, sizeof(bmpheader));
+    std::uint8_t buffer[rowSize];
+    memset(&buffer[rowSize - 4], 0, 4);
+    for (int y = height - 1; y >= 0; y--) {
+      display.readRect(0, y, width, 1, (lgfx::rgb888_t*)buffer);
+      file.write(buffer, rowSize);
+    }
+    file.close();
+  } else {
+    return false;
+  }
+  return true;
+}
+
+// カラーパレットの色調に変更した画像を保存
+
 
 // ----------------------------------------------------
 // カメラ・PSRAM関連
@@ -125,18 +337,18 @@ void setup()
   display.setRotation(1);
   display.setColorDepth(8);
   display.setBrightness(128);
-  display.setTextSize(1.8);
+  display.setTextSize(1.4);
   canvas.createSprite(240, 176);
   // canvas.createSprite(240, 176);  // カメラ画像表示
   // canvas.createSprite(240, 135);  // 変換画像表示
   printlnStr(" OK : UnitLCD");
-  delay(500);
+  delay(1000);
 
   // ----------------------------------------------------
   // ユニットスクロール初期化
   scroll.begin(&Wire, SCROLL_ADDR, PIN_SDA, PIN_SCL, 400000U);
   printlnStr(" OK : UnitScroll");
-  delay(500);
+  delay(1000);
 
   // ----------------------------------------------------
   // PSRAMチェック
@@ -150,7 +362,7 @@ void setup()
     delay(1500);
     ESP.restart();
   }
-  delay(500);
+  delay(1000);
 
   // ----------------------------------------------------
   // カメラ起動チェック
@@ -163,19 +375,60 @@ void setup()
     delay(1500);
     ESP.restart();
   }
-  delay(500);
+  delay(1000);
 
   // ----------------------------------------------------
-  // SDカード読み書きチェック
-  printlnStr(" OK : SD-Read");
-  delay(500);
-  printlnStr(" OK : SD-Write");
-  delay(500);
+  // SDカードチェック
+  SPI.begin(7, 8, 6, -1);
+  if (SD.begin(15, SPI, 80000000)) {
+    // SDカード読み書きテスト
+    if (testReadWriteSD()) {
+      printlnStr(" OK : SD-Card Read & Write");
+    } else {
+      printlnStr(" NG : SD-Card Read or Write failed");
+      delay(1500);
+      ESP.restart();
+    }
+    delay(1000);
+
+    // カラーパレット設定
+    String filename = "/ColorPalettes.txt";
+    if (SD.exists(filename)) {
+      // ColorPalettes.txtファイルが存在する場合、そのカラーパレットの値を使用する
+      if (loadPaletteFromSD(filename)) {
+        printlnStr(" OK : ColorPalette Setting");
+        printlnStr(" -------------------------");
+        printlnStr(" Use ColorPalettes.txt");
+        printlnStr(" -------------------------");
+        } else {
+        printlnStr(" NG : ColorPalette Setting failed");
+        delay(1500);
+        ESP.restart();
+      }
+    } else {
+      // ColorPalettes.txtファイルがない場合、デフォルトのカラーパレットの値を使用する
+      printlnStr(" -------------------------");
+      printlnStr(" No ColorPalettes.txt");
+      printlnStr(" Use Default ColorPalette");
+      printlnStr(" -------------------------");
+    }
+    // パレットデータ確認用(シリアル出力)
+    checkPalettes();
+    delay(100);
+  } else {
+    printlnStr(" NG : SD-Card Init failed");
+    delay(1500);
+    ESP.restart();
+  }
+  SD.end();  // 一旦ENDしておく
+  delay(1000);
 
   // ----------------------------------------------------
+  // ディスプレイされるフォントサイズを変更
+  display.setTextSize(2);
   // 初期化完了
   printlnStr(" Complete Settings");
-  delay(500);
+  delay(1000);
   printlnStr("\n Enjoy Photo Life!!");
   delay(2000);
 
@@ -183,16 +436,42 @@ void setup()
 
 // ----------------------------------------------------
 // loop
+signed short int newEncoderValue = 0;   // エンコーダの値　新
+signed short int lastEncoderValue = 0;  // エンコーダの値　旧
+
 void loop()
 {
-  int16_t encoder_value = scroll.getEncoderValue();
+  newEncoderValue = scroll.getEncoderValue();
   bool btn_stauts       = scroll.getButtonStatus();
+
+  int diff = newEncoderValue - lastEncoderValue;
 
   if (btn_stauts) {
     if (!PRESSED_FLG) {
       PRESSED_FLG = true;
-      printlnStr("BTN PRESSED");
-      printlnInt(encoder_value);
+      // printlnStr("BTN PRESSED");
+      // printlnInt(newEncoderValue);
+
+      // 撮影
+      CameraGet();
+
+      SD.end();  // 念のため一旦END
+      delay(100);
+      SD.begin(15, SPI, 80000000);  // 保存失敗するときは速度を下げる
+      // ディスプレイに表示された画像を保存
+      if (saveToSD_DisplayBMP()) {
+        printlnStr("SAVE OK");
+        delay(500);
+      } else {
+        printlnStr("SAVE Failed");
+        delay(500);
+      }
+
+      // フレームバッファを解放
+      CameraFree();
+      SD.end();
+      // ファイル連番を更新
+      filecounter++;
     }
   } else {
     PRESSED_FLG = false;
