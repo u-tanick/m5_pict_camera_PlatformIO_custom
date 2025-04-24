@@ -56,7 +56,7 @@ uint32_t ColorPalettes[9][8] = {
     0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000 },
 };
 
-// カラーパレット値確認用関数
+// カラーパレット値確認(デバッグ用、シリアル出力のみ)
 void checkPalettes() {
   for (int pi = 0; pi < maxPaletteSize; ++pi) {
     Serial.printf("%X,%X,%X,%X,%X,%X,%X,%X\n", ColorPalettes[pi][0], ColorPalettes[pi][1], ColorPalettes[pi][2], ColorPalettes[pi][3], ColorPalettes[pi][4], ColorPalettes[pi][5], ColorPalettes[pi][6], ColorPalettes[pi][7]);
@@ -190,57 +190,6 @@ bool testReadWriteSD(){
 }
 
 // ----------------------------------------------------
-// カメラ画像保存関連
-// SDカード保存ファイル名
-char filename[64];
-
-uint32_t keyOnTime = 0;                 // キースイッチを操作した時間
-int filecounter = 1;                    // ファイルカウンターは電源を入れるたびにリセットされる　極稀にファイル名が被るかも
-
-// ディスプレイに表示された画像を保存
-bool saveToSD_DisplayBMP() {
-  sprintf(filename, "/%010d_%04d_OLED.bmp", keyOnTime, filecounter);
-  File file = SD.open(filename, "w");
-  if (file) {
-
-    int width = display.width();
-    int height = display.height();
-    int rowSize = (3 * width + 3) & ~3;
-
-    lgfx::bitmap_header_t bmpheader;
-    bmpheader.bfType = 0x4D42;
-    bmpheader.bfSize = rowSize * height + sizeof(bmpheader);
-    bmpheader.bfOffBits = sizeof(bmpheader);
-    bmpheader.biSize = 40;
-    bmpheader.biWidth = width;
-    bmpheader.biHeight = height;
-    bmpheader.biPlanes = 1;
-    bmpheader.biBitCount = 24;
-    bmpheader.biCompression = 0;
-    bmpheader.biSizeImage = 0;
-    bmpheader.biXPelsPerMeter = 2835;
-    bmpheader.biYPelsPerMeter = 2835;
-    bmpheader.biClrUsed = 0;
-    bmpheader.biClrImportant = 0;
-
-    file.write((std::uint8_t*)&bmpheader, sizeof(bmpheader));
-    std::uint8_t buffer[rowSize];
-    memset(&buffer[rowSize - 4], 0, 4);
-    for (int y = height - 1; y >= 0; y--) {
-      display.readRect(0, y, width, 1, (lgfx::rgb888_t*)buffer);
-      file.write(buffer, rowSize);
-    }
-    file.close();
-  } else {
-    return false;
-  }
-  return true;
-}
-
-// カラーパレットの色調に変更した画像を保存
-
-
-// ----------------------------------------------------
 // カメラ・PSRAM関連
 #include <esp_camera.h>
 #define POWER_GPIO_NUM 18
@@ -323,6 +272,201 @@ bool CameraFree() {
   return false;
 }
 
+// ----------------------------------------------------
+// カメラ画像保存関連
+char filename[64];                      // SDカード保存ファイル名
+int filecounter = 1;                    // ファイルカウンターは電源を入れるたびにリセットされる　極稀にファイル名が被るかも
+int selectedPalettelndex = -1;          // 選択したパレットの番号（0-9：個別指定, -1：未指定（デフォルト））
+uint8_t graydata[240 * 176];            // 輝度情報保存
+uint32_t btnOnTime = 0;                 // キースイッチを操作した時間
+
+// カメラが撮像したオリジナル画像を保存
+bool saveToSD_OriginalBMP() {
+  sprintf(filename, "/%010d_%04d_Original.bmp", btnOnTime, filecounter);
+  File file = SD.open(filename, "w");
+  if (file) {
+    uint8_t* out_bmp = NULL;
+    size_t out_bmp_len = 0;
+    frame2bmp(fb, &out_bmp, &out_bmp_len);
+    file.write(out_bmp, out_bmp_len);
+    file.close();
+    free(out_bmp);
+  } else {
+    // ファイルの作成・オープンに失敗した場合falseを返す
+    return false;
+  }
+  return true;
+}
+
+// LCDディスプレイに表示された画像を保存
+bool saveToSD_DisplayBMP() {
+  sprintf(filename, "/%010d_%04d_OLED.bmp", btnOnTime, filecounter);
+  File file = SD.open(filename, "w");
+  if (file) {
+    int width = display.width();
+    int height = display.height();
+    int rowSize = (3 * width + 3) & ~3;
+
+    lgfx::bitmap_header_t bmpheader;
+    bmpheader.bfType = 0x4D42;
+    bmpheader.bfSize = rowSize * height + sizeof(bmpheader);
+    bmpheader.bfOffBits = sizeof(bmpheader);
+    bmpheader.biSize = 40;
+    bmpheader.biWidth = width;
+    bmpheader.biHeight = height;
+    bmpheader.biPlanes = 1;
+    bmpheader.biBitCount = 24;
+    bmpheader.biCompression = 0;
+    bmpheader.biSizeImage = 0;
+    bmpheader.biXPelsPerMeter = 2835;
+    bmpheader.biYPelsPerMeter = 2835;
+    bmpheader.biClrUsed = 0;
+    bmpheader.biClrImportant = 0;
+
+    file.write((std::uint8_t*)&bmpheader, sizeof(bmpheader));
+    std::uint8_t buffer[rowSize];
+    memset(&buffer[rowSize - 4], 0, 4);
+    for (int y = height - 1; y >= 0; y--) {
+      display.readRect(0, y, width, 1, (lgfx::rgb888_t*)buffer);
+      file.write(buffer, rowSize);
+    }
+    file.close();
+  } else {
+    // ファイルの作成・オープンに失敗した場合falseを返す
+    return false;
+  }
+  return true;
+}
+
+// カラーパレットの色調に変換した画像を保存
+bool saveToSD_ConvertBMP() {
+  int max_index;
+  int palettelndex = 0;
+  if (selectedPalettelndex == -1) {
+    // 全カラーパレット保存モード（デフォルト）
+    max_index = maxPaletteSize;
+  } else {
+    // 指定パレットのみ保存モード
+    max_index = 1;
+    palettelndex = selectedPalettelndex;
+  }
+
+  for (int i = 0; i < max_index; i++) {
+
+    if (selectedPalettelndex == -1) {
+      palettelndex = i;
+    }
+
+    sprintf(filename, "/%010d_%04d_palette%01d.bmp", btnOnTime, filecounter, i);
+    File file = SD.open(filename, "w");
+    if (file) {
+      int width = fb->width;
+      int height = fb->height;
+      int rowSize = (3 * width + 3) & ~3;
+  
+      lgfx::bitmap_header_t bmpheader;
+      bmpheader.bfType = 0x4D42;
+      bmpheader.bfSize = rowSize * height + sizeof(bmpheader);
+      bmpheader.bfOffBits = sizeof(bmpheader);
+      bmpheader.biSize = 40;
+      bmpheader.biWidth = width;
+      bmpheader.biHeight = height;
+      bmpheader.biPlanes = 1;
+      bmpheader.biBitCount = 24;
+      bmpheader.biCompression = 0;
+      bmpheader.biSizeImage = 0;
+      bmpheader.biXPelsPerMeter = 2835;
+      bmpheader.biYPelsPerMeter = 2835;
+      bmpheader.biClrUsed = 0;
+      bmpheader.biClrImportant = 0;
+  
+      file.write((std::uint8_t*)&bmpheader, sizeof(bmpheader));
+      std::uint8_t buffer[rowSize];
+      memset(&buffer[rowSize - 4], 0, 4);
+      for (int y = height - 1; y >= 0; y--) {
+        for (int x = 0; x < width; x++) {
+  
+          // グレイデータを読み出す
+          int i_gray = y * width + x;
+          uint8_t gray = graydata[i_gray];
+  
+          // カラーパレットから色を取得
+          uint32_t newColor = ColorPalettes[palettelndex][gray];
+          uint8_t r = (newColor >> 16) & 0xFF;
+          uint8_t g = (newColor >> 8) & 0xFF;
+          uint8_t b = newColor & 0xFF;
+  
+          // バッファに書き込み BGRの順になる
+          int i_buffer = x * 3;
+          buffer[i_buffer] = b;
+          buffer[i_buffer + 1] = g;
+          buffer[i_buffer + 2] = r;
+        }
+        file.write(buffer, rowSize);
+      }
+      file.close();
+    } else {
+      // ファイルの作成・オープンに失敗した場合falseを返す(処理を中断)
+      return false;
+    }
+  }  
+  return true;
+}
+
+
+// 輝度情報の保存
+void saveGraylevel_fb() {
+  uint8_t* fb_data = fb->buf;
+  int width = fb->width;
+  int height = fb->height;
+  int i = 0;
+
+  for (int y = 0; y < height; y++) {
+    for (int x = 0; x < (width * 2); x = x + 2) {
+
+      // 各ピクセルの色を取得
+      uint32_t rgb565Color = (fb_data[y * width * 2 + x] << 8) | fb_data[y * width * 2 + x + 1];
+
+      // RGB565からRGB888へ変換
+      // ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+      // オリジナルではここでcanvas0を指定している
+      // ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+      uint32_t rgb888Color = canvas.color16to24(rgb565Color);
+      uint8_t r = (rgb888Color >> 16) & 0xFF;
+      uint8_t g = (rgb888Color >> 8) & 0xFF;
+      uint8_t b = rgb888Color & 0xFF;
+
+      // 輝度の計算 BT.709の係数を使用
+      uint16_t luminance = (uint16_t)(0.2126 * r + 0.7152 * g + 0.0722 * b);
+
+      // 輝度を16階調のグレースケールに変換
+      uint8_t grayLevel = luminance / 32;  // 256/32 = 8
+
+      // 輝度情報を保存
+      graydata[i] = grayLevel;
+      i++;
+    }
+  }
+}
+
+// ----------------------------------------------------
+// 撮影モード切替関連
+// ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+bool modeChange = false;
+void selectMode(int encoderValue) {
+
+  // selectedPalettelndex = encoderValue;
+  // if (encoderValue == -1) {
+  //   // モード切替トグル
+
+  // } else if (encoderValue < -1) {
+  //   // エンコーダー値を強制的に -1に変更
+
+  // } else {
+  //   selectedPalettelndex = -1;
+  // }
+
+}
 
 // ----------------------------------------------------
 // setup
@@ -396,12 +540,12 @@ void setup()
     if (SD.exists(filename)) {
       // ColorPalettes.txtファイルが存在する場合、そのカラーパレットの値を使用する
       if (loadPaletteFromSD(filename)) {
-        printlnStr(" OK : ColorPalette Setting");
+        printlnStr(" OK : Color Palette Setting");
         printlnStr(" -------------------------");
         printlnStr(" Use ColorPalettes.txt");
         printlnStr(" -------------------------");
         } else {
-        printlnStr(" NG : ColorPalette Setting failed");
+        printlnStr(" NG : Color Palette Setting failed");
         delay(1500);
         ESP.restart();
       }
@@ -409,7 +553,7 @@ void setup()
       // ColorPalettes.txtファイルがない場合、デフォルトのカラーパレットの値を使用する
       printlnStr(" -------------------------");
       printlnStr(" No ColorPalettes.txt");
-      printlnStr(" Use Default ColorPalette");
+      printlnStr(" Use Default Color Palette");
       printlnStr(" -------------------------");
     }
     // パレットデータ確認用(シリアル出力)
@@ -425,7 +569,7 @@ void setup()
 
   // ----------------------------------------------------
   // ディスプレイされるフォントサイズを変更
-  display.setTextSize(2);
+  display.setTextSize(1.8);
   // 初期化完了
   printlnStr(" Complete Settings");
   delay(1000);
@@ -452,24 +596,45 @@ void loop()
       // printlnStr("BTN PRESSED");
       // printlnInt(newEncoderValue);
 
+      // ボタン操作した時間
+      btnOnTime = millis();
+
       // 撮影
       CameraGet();
 
       SD.end();  // 念のため一旦END
       delay(100);
       SD.begin(15, SPI, 80000000);  // 保存失敗するときは速度を下げる
-      // ディスプレイに表示された画像を保存
-      if (saveToSD_DisplayBMP()) {
-        printlnStr("SAVE OK");
-        delay(500);
+
+      // LCDディスプレイに表示された画像を保存
+      // カメラが撮像した画像を保存
+      if (saveToSD_OriginalBMP() && saveToSD_DisplayBMP()) {
+        printlnStr("Original Image Save OK");
+        display.print("\n");
+        delay(100);
       } else {
-        printlnStr("SAVE Failed");
-        delay(500);
+        printlnStr("Original Image Save Failed");
+        delay(100);
+      }
+
+      // 輝度情報の保存
+      saveGraylevel_fb();
+
+      // カラーパレットの色調に変換した画像を保存
+      if (saveToSD_ConvertBMP()) {
+        printlnStr("Now Converting...");
+        display.print("\n");
+        delay(1500);
+      } else {
+        printlnStr("Converte Failed");
+        delay(1000);
       }
 
       // フレームバッファを解放
       CameraFree();
       SD.end();
+      printlnStr("Finish Converte");
+      delay(2000);
       // ファイル連番を更新
       filecounter++;
     }
