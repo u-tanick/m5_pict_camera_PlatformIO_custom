@@ -34,8 +34,8 @@ void displayStr(String str) {
 
 // ----------------------------------------------------
 // 最大8色のカラーパレット デフォルト
-int maxPaletteSize = 9;
-uint32_t ColorPalettes[9][8] = {
+int maxPaletteSize = 8;
+uint32_t ColorPalettes[8][8] = {
   { // パレット0 slso8
     0x0D2B45, 0x203C56, 0x544E68, 0x8D697A, 0xD08159, 0xFFAA5E, 0xFFD4A3, 0xFFECD6 },
   { // パレット1 都市伝説解体センター風
@@ -52,8 +52,6 @@ uint32_t ColorPalettes[9][8] = {
     0x001D2A, 0x085562, 0x009A98, 0x00BE91, 0x38D88E, 0x9AF089, 0xF2FF66, 0xF2FF66 },
   { // パレット7 night-rain
     0x000000, 0x012036, 0x3A7BAA, 0x7D8FAE, 0xA1B4C1, 0xF0B9B9, 0xFFD159, 0xFFFFFF },
-  { // パレット8 スペア用
-    0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000 },
 };
 
 // カラーパレット値確認(デバッグ用、シリアル出力のみ)
@@ -276,7 +274,7 @@ bool CameraFree() {
 // カメラ画像保存関連
 char filename[64];                      // SDカード保存ファイル名
 int filecounter = 1;                    // ファイルカウンターは電源を入れるたびにリセットされる　極稀にファイル名が被るかも
-int selectedPalettelndex = -1;          // 選択したパレットの番号（0-9：個別指定, -1：未指定（デフォルト））
+int selectedPalettelndex = -1;          // 選択したパレットの番号（0-8：個別指定, -1：未指定（デフォルト））
 uint8_t graydata[240 * 176];            // 輝度情報保存
 uint32_t btnOnTime = 0;                 // キースイッチを操作した時間
 
@@ -450,7 +448,7 @@ void saveGraylevel_fb() {
 }
 
 // ----------------------------------------------------
-// 撮影モード切替関連
+// ズーム切り替え
 // ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 bool modeChange = false;
 void selectMode(int encoderValue) {
@@ -480,7 +478,7 @@ void setup()
   display.setTextScroll(true);
   display.setRotation(1);
   display.setColorDepth(8);
-  display.setBrightness(128);
+  display.setBrightness(160);
   display.setTextSize(1.4);
   canvas.createSprite(240, 176);
   // canvas.createSprite(240, 176);  // カメラ画像表示
@@ -541,9 +539,7 @@ void setup()
       // ColorPalettes.txtファイルが存在する場合、そのカラーパレットの値を使用する
       if (loadPaletteFromSD(filename)) {
         printlnStr(" OK : Color Palette Setting");
-        printlnStr(" -------------------------");
         printlnStr(" Use ColorPalettes.txt");
-        printlnStr(" -------------------------");
         } else {
         printlnStr(" NG : Color Palette Setting failed");
         delay(1500);
@@ -551,10 +547,8 @@ void setup()
       }
     } else {
       // ColorPalettes.txtファイルがない場合、デフォルトのカラーパレットの値を使用する
-      printlnStr(" -------------------------");
       printlnStr(" No ColorPalettes.txt");
       printlnStr(" Use Default Color Palette");
-      printlnStr(" -------------------------");
     }
     // パレットデータ確認用(シリアル出力)
     checkPalettes();
@@ -569,11 +563,12 @@ void setup()
 
   // ----------------------------------------------------
   // ディスプレイされるフォントサイズを変更
-  display.setTextSize(1.8);
   // 初期化完了
-  printlnStr(" Complete Settings");
+  printlnStr(" -------------------------");
+  printlnStr(" Complete Settings \n ");
   delay(1000);
-  printlnStr("\n Enjoy Photo Life!!");
+  display.setTextSize(1.8);
+  printlnStr(" Enjoy Photo Life!!");
   delay(2000);
 
 }
@@ -586,63 +581,51 @@ signed short int lastEncoderValue = 0;  // エンコーダの値　旧
 void loop()
 {
   newEncoderValue = scroll.getEncoderValue();
-  bool btn_stauts       = scroll.getButtonStatus();
-
   int diff = newEncoderValue - lastEncoderValue;
 
-  if (btn_stauts) {
-    if (!PRESSED_FLG) {
-      PRESSED_FLG = true;
-      // printlnStr("BTN PRESSED");
-      // printlnInt(newEncoderValue);
+  if (scroll.getButtonStatus()) {
+    // ボタン操作した時間
+    btnOnTime = millis();
 
-      // ボタン操作した時間
-      btnOnTime = millis();
+    // 撮影
+    CameraGet();
 
-      // 撮影
-      CameraGet();
+    SD.end();  // 念のため一旦END
+    delay(100);
+    SD.begin(15, SPI, 80000000);  // 保存失敗するときは速度を下げる
 
-      SD.end();  // 念のため一旦END
+    // LCDディスプレイに表示された画像を保存
+    // カメラが撮像した画像を保存
+    if (saveToSD_OriginalBMP() && saveToSD_DisplayBMP()) {
+      printlnStr(" Image Saving...");
       delay(100);
-      SD.begin(15, SPI, 80000000);  // 保存失敗するときは速度を下げる
-
-      // LCDディスプレイに表示された画像を保存
-      // カメラが撮像した画像を保存
-      if (saveToSD_OriginalBMP() && saveToSD_DisplayBMP()) {
-        printlnStr("Original Image Save OK");
-        display.print("\n");
-        delay(100);
-      } else {
-        printlnStr("Original Image Save Failed");
-        delay(100);
-      }
-
-      // 輝度情報の保存
-      saveGraylevel_fb();
-
-      // カラーパレットの色調に変換した画像を保存
-      if (saveToSD_ConvertBMP()) {
-        printlnStr("Now Converting...");
-        display.print("\n");
-        delay(1500);
-      } else {
-        printlnStr("Converte Failed");
-        delay(1000);
-      }
-
-      // フレームバッファを解放
-      CameraFree();
-      SD.end();
-      printlnStr("Finish Converte");
-      delay(2000);
-      // ファイル連番を更新
-      filecounter++;
+    } else {
+      printlnStr(" Image Save Failed");
+      delay(100);
     }
-  } else {
-    PRESSED_FLG = false;
+
+    // 輝度情報の保存
+    saveGraylevel_fb();
+
+    // カラーパレットの色調に変換した画像を保存
+    if (saveToSD_ConvertBMP()) {
+      printlnStr(" Pict Converting...");
+      delay(1500);
+    } else {
+      printlnStr(" Convert Failed");
+      delay(1000);
+    }
+
+    // フレームバッファを解放
+    CameraFree();
+    SD.end();
+    printlnStr(" Save Complete !!");
+    printlnStr(" ");
+    delay(2500);
+    // ファイル連番を更新
+    filecounter++;
   }
 
-  display.setBrightness(160);
   // カメラからフレームを取得して表示
   if (CameraGet()) {
     canvas.pushImage(0, -16, 240, 176, (uint16_t*)fb->buf);  // (x, y, w, h, *data)
@@ -650,163 +633,5 @@ void loop()
     CameraFree();  // 取得したフレームを解放
   }
 
-  delay(5);
+  delay(2);
 }
-
-
-
-// 以下、A-Utaさんコード========================================================================
-
-// /**************************************************
-//  * ESPNowCam video Transmitter
-//  * by @hpsaturn Copyright (C) 2024
-//  * This file is part ESPNowCam project:
-//  * https://github.com/hpsaturn/ESPNowCam
-//  - AtomS3RCam
-//  https://github.com/m5stack/M5AtomS3/blob/main/examples/Basics/camera/camera.ino
-//  https://github.com/m5stack/M5AtomS3/blob/main/examples/Basics/camera/camera_pins.h
-// **************************************************/
-
-// #include <Arduino.h>
-// #include <esp_camera.h>
-// // #include <Utils.h>
-
-// camera_fb_t* fb;
-
-// bool has_psram = false;
-
-// #define POWER_GPIO_NUM 18
-
-// // Please change this to your Camera pins:
-// camera_config_t camera_config = {
-//     .pin_pwdn     = -1,
-//     .pin_reset    = -1,
-//     .pin_xclk     = 21,
-//     .pin_sscb_sda = 12,
-//     .pin_sscb_scl = 9,
-//     .pin_d7       = 13,
-//     .pin_d6       = 11,
-//     .pin_d5       = 17,
-//     .pin_d4       = 4,
-//     .pin_d3       = 48,
-//     .pin_d2       = 46,
-//     .pin_d1       = 42,
-//     .pin_d0       = 3,
-
-//     .pin_vsync = 10,
-//     .pin_href  = 14,
-//     .pin_pclk  = 40,
-    
-//     .xclk_freq_hz = 20000000,
-//     .ledc_timer   = LEDC_TIMER_0,
-//     .ledc_channel = LEDC_CHANNEL_0,
-
-//     .pixel_format  = PIXFORMAT_RGB565,
-//     .frame_size    = FRAMESIZE_QQVGA,
-//     // FRAMESIZE_96X96,    // 96x96 - OK
-//     // FRAMESIZE_QQVGA,    // 160x120 - OK
-//     // FRAMESIZE_QCIF,     // 176x144 - OK
-//     // FRAMESIZE_HQVGA,    // 240x176 - OK
-//     // FRAMESIZE_240X240,  // 240x240 - OK
-//     // FRAMESIZE_QVGA,     // 320x240 - OK
-
-//     .jpeg_quality  = 0,
-//     .fb_count      = 2,
-//     .fb_location   = CAMERA_FB_IN_PSRAM,
-//     .grab_mode     = CAMERA_GRAB_LATEST,
-//     .sccb_i2c_port = 0,
-// };
-
-// bool CameraBegin() {
-//   esp_err_t err = esp_camera_init(&camera_config);
-//   if (err != ESP_OK) {
-//     return false;
-//   }
-
-//   // Add
-//   sensor_t *s = esp_camera_sensor_get();
-//   s->set_hmirror(s, 1);        // 左右反転
-//   s->set_vflip(s, 1); //上下反転 0無効 1有効
-
-//   //カメラ追加設定
-//   // sensor_t * s = esp_camera_sensor_get();
-//   // s->set_hmirror(s, 1); //左右反転 0無効 1有効
-//   // s->set_vflip(s, 1); //上下反転 0無効 1有効
-//   // s->set_colorbar(s, 1); //カラーバー 0無効 1有効
-//   // s->set_brightness(s, 1);  // up the brightness just a bit
-//   // s->set_saturation(s, 0);  // lower the saturation
-
-//   return true;
-// }
-
-// bool CameraGet() {
-//   fb = esp_camera_fb_get();
-//   if (!fb) {
-//     return false;
-//   }
-//   return true;
-// }
-
-// bool CameraFree() {
-//   if (fb) {
-//     esp_camera_fb_return(fb);
-//     return true;
-//   }
-//   return false;
-// }
-
-// void processFrame() {
-//   if (CameraGet()) {
-//     if (has_psram) {
-//       uint8_t *out_jpg = NULL;
-//       size_t out_jpg_len = 0;
-//       frame2jpg(fb, 12, &out_jpg, &out_jpg_len);
-//       // radio.sendData(out_jpg, out_jpg_len);
-//       free(out_jpg);
-//     }
-//     else{
-//       // radio.sendData(fb->buf, fb->len);
-//       delay(30); // ==> weird delay for cameras without PSRAM
-//     }
-//     // printFPS("CAM:");
-//     CameraFree();
-//   }
-// }
-
-// void setup() {
-//   Serial.begin(115200);
-
-//   // add - これが無いと動かなかった
-//   pinMode(POWER_GPIO_NUM, OUTPUT);
-//   digitalWrite(POWER_GPIO_NUM, LOW);
-//   delay(500);  
-
-//   delay(1000); // only for debugging 
-
-//   if(psramFound()){
-//     has_psram = true;
-//     size_t psram_size = esp_spiram_get_size() / 1048576;
-//     Serial.printf("PSRAM size: %dMb\r\n", psram_size);
-//     // suggested config with PSRAM
-//     camera_config.pixel_format = PIXFORMAT_RGB565;
-//     camera_config.fb_location = CAMERA_FB_IN_PSRAM;
-//     camera_config.fb_count = 2;
-//   }
-//   else{
-//     Serial.println("PSRAM not found! Basic framebuffer setup.");
-//   }
-  
-//   // radio.init();
-
-//   if (!CameraBegin()) {
-//     Serial.println("Camera Init Fail");
-//     delay(1000);
-//     ESP.restart();
-//   }
-//   delay(500);
-// }
-
-// void loop() {
-//   processFrame();
-// }
-
