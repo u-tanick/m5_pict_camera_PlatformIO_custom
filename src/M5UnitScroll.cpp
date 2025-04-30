@@ -94,7 +94,7 @@ uint32_t M5UnitScroll::getLEDColor(void) {
 }
 
 void M5UnitScroll::setEncoderValue(int16_t encoder) {
-    writeBytes(_addr, ENCODER_REG, (uint8_t *)&encoder, 4);
+    writeBytes(_addr, ENCODER_REG, (uint8_t *)&encoder, 2);
 }
 
 void M5UnitScroll::resetEncoder(void) {
