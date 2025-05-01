@@ -1,4 +1,10 @@
 #include <M5Unified.h>
+#include "M5UnitScroll.h"
+#include <M5UnitLCD.h>
+#include <esp_camera.h>
+#include <SPI.h>
+#include <SD.h>
+#include <vector>
 
 // ----------------------------------------------------
 // Grove PIN
@@ -6,37 +12,17 @@
 #define PIN_SDA 2
 
 // ----------------------------------------------------
-// ユニットスクロール関連
-#include "M5UnitScroll.h"
+// ユニットスクロール関連の変数・定数
 M5UnitScroll scroll;
 bool PRESSED_FLG = false;
 
 // ----------------------------------------------------
-// UnitLCD関連
-#include <M5UnitLCD.h>
+// UnitLCD関連の変数・定数
 M5UnitLCD display;
 M5Canvas canvas(&display);
 
 // ----------------------------------------------------
-// 汎用プリント関数
-void printlnStr(String str)
-{
-  display.println(str);
-  Serial.println(str);
-}
-void printlnInt(int16_t i)
-{
-  display.println(i);
-  Serial.println(i);
-}
-void displayStr(String str)
-{
-  display.drawCenterString(str, 120, 60);
-  Serial.println(str);
-}
-
-// ----------------------------------------------------
-// 最大8色のカラーパレット デフォルト
+// 最大8色のカラーパレット デフォルト関連の変数・定数
 int maxPaletteSize = 8;
 uint32_t ColorPalettes[8][8] = {
     {// パレット0 slso8
@@ -67,16 +53,101 @@ void checkPalettes()
 }
 
 // ----------------------------------------------------
-// SDカード関連
-#include <SPI.h>
-#include <SD.h>
+// カメラ・PSRAM関連の変数・定数
+#define POWER_GPIO_NUM 18
+camera_fb_t *fb;
+camera_config_t camera_config = {
+    .pin_pwdn = -1,
+    .pin_reset = -1,
+    .pin_xclk = 21,
+    .pin_sscb_sda = 12,
+    .pin_sscb_scl = 9,
+    .pin_d7 = 13,
+    .pin_d6 = 11,
+    .pin_d5 = 17,
+    .pin_d4 = 4,
+    .pin_d3 = 48,
+    .pin_d2 = 46,
+    .pin_d1 = 42,
+    .pin_d0 = 3,
 
-// SDカードにカラーパレットファイルがあれば読み込む
-// src/フォルダにサンプルを置いてあるため使用する場合は事前にSDカードに保存しておく
-// サンプルの設定自体は ColorPalettes の定義と同様
+    .pin_vsync = 10,
+    .pin_href = 14,
+    .pin_pclk = 40,
+
+    .xclk_freq_hz = 20000000,
+    .ledc_timer = LEDC_TIMER_0,
+    .ledc_channel = LEDC_CHANNEL_0,
+
+    .pixel_format = PIXFORMAT_RGB565,
+    .frame_size = FRAMESIZE_HQVGA,
+    // FRAMESIZE_96X96,    // 96x96
+    // FRAMESIZE_QQVGA,    // 160x120
+    // FRAMESIZE_QCIF,     // 176x144
+    // FRAMESIZE_HQVGA,    // 240x176
+    // FRAMESIZE_240X240,  // 240x240
+    // FRAMESIZE_QVGA,     // 320x240
+
+    .jpeg_quality = 0,
+    .fb_count = 2,
+    .fb_location = CAMERA_FB_IN_PSRAM,
+    .grab_mode = CAMERA_GRAB_LATEST,
+    .sccb_i2c_port = 0,
+};
+
+// ----------------------------------------------------
+// カメラ画像保存関連の変数・定数
+char filename_bmp[64];         // SDカード保存ファイル名
+int filecounter = 1;           // ファイルカウンターは電源を入れるたびにリセットされる　極稀にファイル名が被るかも
+int selectedPalettelndex = -1; // 選択したパレットの番号（0-8：個別指定, -1：未指定（デフォルト））
+uint8_t graydata[240 * 176];   // 輝度情報保存
+uint32_t btnOnTime = 0;        // 外部ボタン（スクロールユニットなど）を操作した時間
+float zoomRate = 1.0;          // ズーム倍率（1.0倍スタート）
+camera_fb_t processed_fb;      // 拡大後用のフレーム構造体
+uint8_t *processed_buf = NULL; // 加工済みのバッファ本体（free対象）
+
+#define HQVGA_WIDTH 240
+#define HQVGA_HEIGHT 176
+#define PIXEL_SIZE 2 // RGB565
+
+// ----------------------------------------------------
+// ファイル名リスト作成関連の変数・定数
+constexpr size_t MAX_FILENAME_LEN = 128;           // ファイル名の最大長（先頭に/を付けるのでちょっと余裕もたせる）
+constexpr size_t MAX_FILES = 1500;                 // 想定する最大bmpファイル数 1750あたりで確保領域がバッファオーバーフロー
+size_t MAX_FILE_NUMBER = 0;                        // 実際のファイル数
+char fileNameStorage[MAX_FILES][MAX_FILENAME_LEN]; // ファイル名バッファ
+std::vector<char *> bmpFileNames;                  // bmpファイル名だけを入れるリスト
+
+// ----------------------------------------------------
+// 汎用プリント関数
+
+// 文字列用
+void printlnStr(String str)
+{
+  display.println(str);
+  Serial.println(str);
+}
+// Int用
+void printlnInt(int16_t i)
+{
+  display.println(i);
+  Serial.println(i);
+}
+// LCD描画用
+void displayStr(String str)
+{
+  display.drawCenterString(str, 120, 60);
+  Serial.println(str);
+}
+
+// ----------------------------------------------------
+// SDカード関連の関数
+
+// SDカードにカラーパレットファイルがあれば読み込むための関数
+// src/フォルダにサンプル(ColorPallettes.txt)があるため、使用する場合は事前にSDカードに保存しておく
+// サンプルの設定は uint32_t ColorPalettes[8][8] の定義と同様のため、色合いを変えて保存したい場合にファイルを使用する想定
 bool loadPaletteFromSD(String filename)
 {
-
   // SDカード内のファイルからカラーパレットを読み込む
   File file = SD.open(filename, FILE_READ);
   if (!file)
@@ -149,7 +220,7 @@ bool loadPaletteFromSD(String filename)
   return true;
 }
 
-// ファイルの読み書きテスト用関数
+// 起動時のファイルの読み書きテスト用の関数
 bool testReadWriteSD()
 {
   // ファイル読み書きテスト用ファイル名
@@ -220,48 +291,8 @@ bool testReadWriteSD()
 
 // ----------------------------------------------------
 // カメラ・PSRAM関連
-#include <esp_camera.h>
-#define POWER_GPIO_NUM 18
-camera_fb_t *fb;
-camera_config_t camera_config = {
-    .pin_pwdn = -1,
-    .pin_reset = -1,
-    .pin_xclk = 21,
-    .pin_sscb_sda = 12,
-    .pin_sscb_scl = 9,
-    .pin_d7 = 13,
-    .pin_d6 = 11,
-    .pin_d5 = 17,
-    .pin_d4 = 4,
-    .pin_d3 = 48,
-    .pin_d2 = 46,
-    .pin_d1 = 42,
-    .pin_d0 = 3,
 
-    .pin_vsync = 10,
-    .pin_href = 14,
-    .pin_pclk = 40,
-
-    .xclk_freq_hz = 20000000,
-    .ledc_timer = LEDC_TIMER_0,
-    .ledc_channel = LEDC_CHANNEL_0,
-
-    .pixel_format = PIXFORMAT_RGB565,
-    .frame_size = FRAMESIZE_HQVGA,
-    // FRAMESIZE_96X96,    // 96x96
-    // FRAMESIZE_QQVGA,    // 160x120
-    // FRAMESIZE_QCIF,     // 176x144
-    // FRAMESIZE_HQVGA,    // 240x176
-    // FRAMESIZE_240X240,  // 240x240
-    // FRAMESIZE_QVGA,     // 320x240
-
-    .jpeg_quality = 0,
-    .fb_count = 2,
-    .fb_location = CAMERA_FB_IN_PSRAM,
-    .grab_mode = CAMERA_GRAB_LATEST,
-    .sccb_i2c_port = 0,
-};
-
+// カメラ初期設定用関数
 bool CameraBegin()
 {
   esp_err_t err = esp_camera_init(&camera_config);
@@ -287,6 +318,7 @@ bool CameraBegin()
   return true;
 }
 
+// カメラ画像読み込み用関数
 bool CameraGet()
 {
   fb = esp_camera_fb_get();
@@ -297,6 +329,7 @@ bool CameraGet()
   return true;
 }
 
+// カメラのフレームバッファ開放用関数
 bool CameraFree()
 {
   if (fb)
@@ -309,11 +342,47 @@ bool CameraFree()
 
 // ----------------------------------------------------
 // カメラ画像保存関連
-char filename_bmp[64];             // SDカード保存ファイル名
-int filecounter = 1;           // ファイルカウンターは電源を入れるたびにリセットされる　極稀にファイル名が被るかも
-int selectedPalettelndex = -1; // 選択したパレットの番号（0-8：個別指定, -1：未指定（デフォルト））
-uint8_t graydata[240 * 176];   // 輝度情報保存
-uint32_t btnOnTime = 0;        // キースイッチを操作した時間
+
+// ズーム倍率に合わせた画像のリサイズおよび切り出し
+uint8_t *scaleAndCrop_RGB565()
+{
+
+  const uint8_t *fb_buf = fb->buf;
+
+  // リサイズスケール
+  const int scaled_w = (int)(HQVGA_WIDTH * zoomRate);
+  const int scaled_h = (int)(HQVGA_HEIGHT * zoomRate);
+  // 切り出し座標
+  const int crop_x = (scaled_w - HQVGA_WIDTH) / 2;
+  const int crop_y = (scaled_h - HQVGA_HEIGHT) / 2;
+
+  uint8_t *result = (uint8_t *)malloc(HQVGA_WIDTH * HQVGA_HEIGHT * PIXEL_SIZE);
+  if (!result)
+    return nullptr;
+
+  for (int y = 0; y < HQVGA_HEIGHT; y++)
+  {
+    for (int x = 0; x < HQVGA_WIDTH; x++)
+    {
+      int sx = (int)((x + crop_x) / zoomRate);
+      int sy = (int)((y + crop_y) / zoomRate);
+
+      // 範囲チェック
+      if (sx >= HQVGA_WIDTH)
+        sx = HQVGA_WIDTH - 1;
+      if (sy >= HQVGA_HEIGHT)
+        sy = HQVGA_HEIGHT - 1;
+
+      int src_idx = (sy * HQVGA_WIDTH + sx) * PIXEL_SIZE;
+      int dst_idx = (y * HQVGA_WIDTH + x) * PIXEL_SIZE;
+
+      result[dst_idx] = fb_buf[src_idx];
+      result[dst_idx + 1] = fb_buf[src_idx + 1];
+    }
+  }
+
+  return result;
+}
 
 // カメラが撮像したオリジナル画像を保存
 bool saveToSD_OriginalBMP()
@@ -324,6 +393,33 @@ bool saveToSD_OriginalBMP()
   {
     uint8_t *out_bmp = NULL;
     size_t out_bmp_len = 0;
+
+    camera_fb_t *raw_fb = fb;
+
+    if (zoomRate > 1.0)
+    {
+      // 1.0倍よりもズームしている場合
+      // 画像データを拡大し、一定のサイズに切り出したデータに変換
+      processed_buf = scaleAndCrop_RGB565();
+      if (!processed_buf)
+      {
+        esp_camera_fb_return(raw_fb);
+        file_bmp.close();
+        return false;
+      }
+
+      processed_fb.buf = processed_buf;
+      processed_fb.len = HQVGA_WIDTH * HQVGA_HEIGHT * PIXEL_SIZE;
+      processed_fb.width = HQVGA_WIDTH;
+      processed_fb.height = HQVGA_HEIGHT;
+      processed_fb.format = PIXFORMAT_RGB565;
+      fb = &processed_fb;
+      esp_camera_fb_return(raw_fb);
+    }
+    else
+    {
+      fb = raw_fb;
+    }
     frame2bmp(fb, &out_bmp, &out_bmp_len);
     file_bmp.write(out_bmp, out_bmp_len);
     file_bmp.close();
@@ -382,20 +478,7 @@ bool saveToSD_DisplayBMP()
   return true;
 }
 
-// bool saveToSD_BMP()
-// {
-//   sprintf(filename_bmp, "/%010d_%04d_Original.bmp", btnOnTime, filecounter);
-//   File file_bmp = SD.open(filename_bmp, "w");
-//   sprintf(filename_bmp, "/%010d_%04d_LCD.bmp", btnOnTime, filecounter);
-//   File file_bmp = SD.open(filename_bmp, "w");
-
-
-
-
-//   return true;
-// }
-
-// カラーパレットの色調に変換した画像を保存
+// オリジナルの画像をカラーパレットの色調に変換した画像を保存
 bool saveToSD_ConvertBMP()
 {
   int max_index;
@@ -481,7 +564,7 @@ bool saveToSD_ConvertBMP()
   return true;
 }
 
-// 輝度情報の保存
+// 色調変更用の輝度情報保存データ作成
 void saveGraylevel_fb()
 {
   uint8_t *fb_data = fb->buf;
@@ -516,13 +599,12 @@ void saveGraylevel_fb()
   }
 }
 
-// ----------------------------------------------------
-// カメラ画像を切り出してズーム表示する関数
+// カメラ画像を切り出してズーム表示（LCD描画用）
 void pushImageZoom(M5Canvas *canvas, int dst_x, int dst_y, int dst_w, int dst_h,
                    const uint16_t *src16, int src_w, int src_h,
                    int crop_x, int crop_y, int crop_w, int crop_h)
 {
-  const uint8_t *src = (const uint8_t *)src16; // ここでbyte配列として扱う！
+  const uint8_t *src = (const uint8_t *)src16;
 
   for (int y = 0; y < dst_h; ++y)
   {
@@ -542,53 +624,49 @@ void pushImageZoom(M5Canvas *canvas, int dst_x, int dst_y, int dst_w, int dst_h,
 }
 
 // ----------------------------------------------------
-// Jpgファイル名のリストを作成する
-#include <vector>
+// ファイル名リスト作成関連
 
-constexpr size_t MAX_FILES = 1500;       // 想定する最大jpgファイル数 1750あたりで確保領域がバッファオーバーフロー
-constexpr size_t MAX_FILENAME_LEN = 128; // ファイル名の最大長（先頭に/を付けるのでちょっと余裕もたせる）
-
-char fileNameStorage[MAX_FILES][MAX_FILENAME_LEN]; // ファイル名バッファ
-std::vector<char*> jpgFileNames;                   // Jpgファイルだけを入れるリスト
-
-// ファイル名が.jpgで終わっているかを判定する関数
-bool isJpgFile(const char* filename) {
+// ファイル名が.bmpで終わっているかを判定する関数
+bool isBmpFile(const char *filename)
+{
   size_t len = strlen(filename);
-  return (len >= 4) && 
+  return (len >= 4) &&
          (strcasecmp(filename + len - 4, ".bmp") == 0); // 大文字小文字を無視して比較
-
-         // ★暫定　いったん実態としてゃbmpのリスト。あとで拡張子をjpgに変える
 }
 
-size_t MAX_FILE_NUMBER = 0;
+// bmpファイル名のリストを作成する
+void getAllBmpFileNames()
+{
 
-void getAllJpgFileNames() {
+  Serial.println("getAllBmpFileNames");
 
-  Serial.println("getAllJpgFileNames");
-
-  jpgFileNames.clear();
-  jpgFileNames.reserve(MAX_FILES);
+  bmpFileNames.clear();
+  bmpFileNames.reserve(MAX_FILES);
 
   size_t fileCount = 0;
 
   SD.begin(15, SPI, 80000000);
 
   File root = SD.open("/");
-  if (!root) {
+  if (!root)
+  {
     Serial.println("ルートディレクトリを開けませんでした！");
     return;
   }
 
   File entry = root.openNextFile();
   Serial.println(entry);
-  while (entry && fileCount < MAX_FILES) {
-    if (!entry.isDirectory()) {
-      const char* filename = entry.name();
+  while (entry && fileCount < MAX_FILES)
+  {
+    if (!entry.isDirectory())
+    {
+      const char *filename = entry.name();
       Serial.println(filename);
-      if (isJpgFile(filename)) {
+      if (isBmpFile(filename))
+      {
         // 先頭に '/' を付加して保存
         snprintf(fileNameStorage[fileCount], MAX_FILENAME_LEN, "/%s", filename);
-        jpgFileNames.push_back(fileNameStorage[fileCount]);
+        bmpFileNames.push_back(fileNameStorage[fileCount]);
         fileCount++;
       }
     }
@@ -599,20 +677,19 @@ void getAllJpgFileNames() {
   root.close();
   SD.end();
 
-  // Jpgファイル名を降順にソート
-  std::sort(jpgFileNames.begin(), jpgFileNames.end(), [](const char* a, const char* b) {
-    return strcmp(a, b) > 0;
-  });
+  // bmpファイル名を降順にソート
+  std::sort(bmpFileNames.begin(), bmpFileNames.end(), [](const char *a, const char *b)
+            { return strcmp(a, b) > 0; });
 
-  Serial.println("\nルートディレクトリ内のJpgファイル一覧 (降順):");
-  for (const char* fileName : jpgFileNames) {
+  Serial.println("\nルートディレクトリ内のbmpファイル一覧 (降順):");
+  for (const char *fileName : bmpFileNames)
+  {
     Serial.println(fileName);
   }
-  Serial.println("Jpgファイル一覧の取得とソートが完了しました。");
+  Serial.println("bmpファイル一覧の取得とソートが完了しました。");
 }
 
-
-// ----------------------------------------------------
+// --------------------------------------------------------------------------------------------------------
 // setup
 void setup()
 {
@@ -714,7 +791,6 @@ void setup()
     // パレットデータ確認用(シリアル出力)
     checkPalettes();
     delay(1000);
-
   }
   else
   {
@@ -736,19 +812,18 @@ void setup()
   delay(2000);
 }
 
-// ----------------------------------------------------
+// --------------------------------------------------------------------------------------------------------
 // loop
 bool previewMode = false;
 bool initLoop = true;
 signed short int newEncoderValue = 0;  // エンコーダの値　新
 signed short int lastEncoderValue = 0; // エンコーダの値　旧
 
-float zoomRate = 1.0; // ズーム倍率（1.0倍スタート）
-
 void loop()
 {
   // 初回起動時のEncoderValueを必ず0にセット
-  if (initLoop) {
+  if (initLoop)
+  {
     int16_t iv = 0;
     scroll.setEncoderValue(iv);
     initLoop = false;
@@ -757,16 +832,19 @@ void loop()
   newEncoderValue = scroll.getEncoderValue();
   int diff = newEncoderValue - lastEncoderValue;
 
-  if (!previewMode) {
+  if (!previewMode)
+  {
 
     Serial.println(newEncoderValue);
 
     // ========== 通常モード ==========
-    if (newEncoderValue <= -1) {
+    if (newEncoderValue <= -1)
+    {
       // EncoderValueが-1以下の場合の処理
 
       // -1よりも小さい場合は強制的に-1にリセット
-      if (newEncoderValue < -1) {
+      if (newEncoderValue < -1)
+      {
         scroll.setEncoderValue(-1);
         newEncoderValue = -1;
       }
@@ -779,15 +857,18 @@ void loop()
       canvas.pushSprite(&display, 0, 0);
 
       // ボタン押したらプレビューモードに入る
-      if (scroll.getButtonStatus()) {
+      if (scroll.getButtonStatus())
+      {
 
         Serial.println("Press button");
 
         canvas.fillSprite(PINK);
         canvas.setTextColor(BLACK);
-        canvas.drawCenterString("Preview Mode", 120, 30);
-        canvas.drawCenterString("Getting Ready", 120, 60);
-        canvas.drawCenterString("Please Wait", 120, 90);
+        canvas.setTextSize(2.4);
+        canvas.drawCenterString("Please Wait", 120, 30);
+        canvas.setTextSize(2.0);
+        canvas.drawCenterString("Preview Mode", 120, 60);
+        canvas.drawCenterString("Getting Ready", 120, 85);
         canvas.pushSprite(&display, 0, 0);
 
         previewMode = true;
@@ -796,31 +877,37 @@ void loop()
         newEncoderValue = -1;
 
         // サムネイル画像ファイル名のリストを作成
-        getAllJpgFileNames();
-  
+        getAllBmpFileNames();
+
         delay(500);
       }
     }
-    else {
+    else
+    {
       // EncoderValueが 0 以上の場合の処理
 
       canvas.setTextSize(1.8);
 
       // 40よりも大きい場合は強制的に40にリセット
-      if (newEncoderValue > 40) {
+      if (newEncoderValue > 40)
+      {
         scroll.setEncoderValue(40);
         newEncoderValue = 40;
       }
 
-      // 最大倍率 4.0 倍（EncoderValue = 40 が最大）
-      if (diff != 0) {
+      // 最大倍率 4.0 倍（EncoderValue = 40 を最大とする）
+      if (diff != 0)
+      {
         zoomRate += diff * 0.1;
-        if (zoomRate < 1.0) zoomRate = 1.0;
-        if (zoomRate > 4.0) zoomRate = 4.0;
+        if (zoomRate < 1.0)
+          zoomRate = 1.0;
+        if (zoomRate > 4.0)
+          zoomRate = 4.0;
         Serial.printf("ZoomRate: %.1f\n", zoomRate);
       }
 
-      if (scroll.getButtonStatus()) {
+      if (scroll.getButtonStatus())
+      {
         // カメラ画像の保存
         btnOnTime = millis();
         CameraGet();
@@ -828,26 +915,42 @@ void loop()
         delay(100);
         SD.begin(15, SPI, 80000000); // 保存失敗するときは速度を下げる
 
+// LCDディスプレイ表示画像も保存する場合は SAVE_LCD_IMAGE を有効化する
+// # define SAVE_LCD_IMAGE
+#ifdef SAVE_LCD_IMAGE
         // LCDディスプレイに表示された画像を保存
         // カメラが撮像した画像を保存
-//        if (saveToSD_BMP()) {
-        if (saveToSD_OriginalBMP() && saveToSD_DisplayBMP()) { ★
+        if (saveToSD_OriginalBMP() && saveToSD_DisplayBMP())
+        {
+#else
+        // カメラが撮像した画像を保存
+        if (saveToSD_OriginalBMP())
+        {
+#endif
           printlnStr(" Image Saving...");
           delay(100);
-        } else {
-          printlnStr(" Image Save Failed");
+        }
+        else
+        {
+          printlnStr(" Image Save Failed !");
           delay(100);
         }
+
         // 輝度情報の保存
         saveGraylevel_fb();
+
         // カラーパレットの色調に変換した画像を保存
-        if (saveToSD_ConvertBMP()) {
+        if (saveToSD_ConvertBMP())
+        {
           printlnStr(" Pict Converting...");
           delay(1500);
-        } else {
-          printlnStr(" Convert Failed");
+        }
+        else
+        {
+          printlnStr(" Convert Failed !");
           delay(1000);
         }
+
         CameraFree();
         SD.end();
         printlnStr(" Save Complete !!");
@@ -856,8 +959,9 @@ void loop()
         filecounter++;
       }
 
-      // カメラからフレームを取得して表示
-      if (CameraGet()) {
+      // カメラからフレームを取得してLCDに表示
+      if (CameraGet())
+      {
         int src_w = fb->width;
         int src_h = fb->height;
         int crop_w = src_w / zoomRate;
@@ -866,79 +970,102 @@ void loop()
         int crop_y = (src_h - crop_h) / 2;
 
         canvas.fillSprite(0);
-        pushImageZoom(&canvas, 0, -16, 240, 176, (uint16_t*)fb->buf, src_w, src_h, crop_x, crop_y, crop_w, crop_h);
+        pushImageZoom(&canvas, 0, -16, 240, 176, (uint16_t *)fb->buf, src_w, src_h, crop_x, crop_y, crop_w, crop_h);
         canvas.pushSprite(&display, 0, 0);
         CameraFree();
       }
     }
   }
-  else {
+  else
+  {
     // ========== プレビューモード ==========
     Serial.println("Preview Mode");
     delay(200);
 
     // スクロールの値によって処理を分岐
-    if (newEncoderValue <= -1) {
+    if (newEncoderValue <= -1)
+    {
       // EncoderValue が -1 の場合は "Preview Mode" を表示
       scroll.setEncoderValue(-1);
       newEncoderValue = -1;
       canvas.fillSprite(SKYBLUE);
       canvas.setTextColor(WHITE);
-      canvas.setTextSize(2.4);
-      canvas.drawCenterString("Preview Mode", 120, 45);
-      canvas.drawCenterString("<- Scrol ->", 120, 75);
+      canvas.setTextSize(2.6);
+      canvas.drawCenterString("Preview Mode", 120, 20);
+      canvas.setTextSize(2.0);
+      canvas.drawCenterString("<- Scroll Image ->", 120, 55);
+      canvas.drawCenterString("Press Button", 120, 85);
+      canvas.drawCenterString("Return Camera Mode", 120, 105);
       canvas.pushSprite(&display, 0, 0);
-
-    } else {
+    }
+    else
+    {
       // -1以外の場合は、ファイルリストに従って画像を表示する
       // ファイルリストが空ならエラーメッセージ表示
-      if (jpgFileNames.empty()) {
+      if (bmpFileNames.empty())
+      {
         canvas.fillSprite(RED);
         canvas.setTextColor(WHITE);
         canvas.setTextSize(2.0);
-        canvas.drawCenterString("No BMP files found.", 120, 60);
+        canvas.drawCenterString("No BMP files found", 120, 60);
         canvas.pushSprite(&display, 0, 0);
-      } else {
-        if (newEncoderValue >= MAX_FILE_NUMBER) {
+      }
+      else
+      {
+        if (newEncoderValue > MAX_FILE_NUMBER)
+        {
           // EncoderValueの値はファイル数の最大を上限とする
-          canvas.fillSprite(YELLOW);
+          canvas.fillSprite(MAGENTA);
           canvas.setTextColor(WHITE);
-          canvas.setTextSize(2.4);
-          canvas.drawCenterString("Preview File End", 120, 45);
+          canvas.setTextSize(2.0);
+          canvas.drawCenterString("Preview File End", 120, 60);
           canvas.pushSprite(&display, 0, 0);
-    
+          delay(2000);
+
           newEncoderValue = MAX_FILE_NUMBER;
-          scroll.setEncoderValue(MAX_FILE_NUMBER);
-        } else {
+          scroll.setEncoderValue(newEncoderValue);
+        }
+        else
+        {
           // 現在のEncoderValueから表示すべきインデックスを決める
-          int fileIndex = jpgFileNames.size() - 1 - newEncoderValue; // 降順
+          int fileIndex = bmpFileNames.size() - 1 - newEncoderValue; // 降順
 
           // 範囲外にならないように補正
-          if (fileIndex < 0) fileIndex = 0;
-          if (fileIndex >= jpgFileNames.size()) fileIndex = jpgFileNames.size() - 1;
-  
-          Serial.printf("Display file: %s\n", jpgFileNames[fileIndex]);
-  
+          if (fileIndex < 0)
+            fileIndex = 0;
+          if (fileIndex >= bmpFileNames.size())
+            fileIndex = bmpFileNames.size() - 1;
+
+          Serial.printf("Display file: %s\n", bmpFileNames[fileIndex]);
+
           // 画像をロードして表示
           canvas.fillSprite(BLACK);
           canvas.setTextColor(WHITE);
           canvas.setTextSize(1.4);
-  
+
           SD.begin(15, SPI, 80000000);
-  
-          File jpgFile = SD.open(jpgFileNames[fileIndex]);
-          if (jpgFile) {
-            canvas.drawBmp(&jpgFile, 0, 0);  // あとでdrawJpgに変える
-            jpgFile.close();
-          } else {
+
+          File bmpFile = SD.open(bmpFileNames[fileIndex]);
+          if (bmpFile)
+          {
+            canvas.drawBmp(&bmpFile, 0, 0);
+            bmpFile.close();
+          }
+          else
+          {
             canvas.drawCenterString("Failed to load", 120, 60);
           }
+
+          String str = String(MAX_FILE_NUMBER - fileIndex) + " / " + String(MAX_FILE_NUMBER);
+          canvas.fillSmoothRoundRect(155, 8, 75, 15, 5, BLACK);
+          canvas.drawRightString(str, 230, 10);
           canvas.pushSprite(&display, 0, 0);
         }
       }
     }
 
-    if (scroll.getButtonStatus()) {
+    if (scroll.getButtonStatus())
+    {
       // プレビューモードでスクロールユニットのボタンが押されたら無条件で通常モードに戻る
       previewMode = false;
       scroll.setEncoderValue(-1);
